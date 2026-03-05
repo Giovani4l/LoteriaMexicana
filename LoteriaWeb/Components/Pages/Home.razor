@@ -1,0 +1,59 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@layout LoteriaWeb.Components.Layout.EmptyLayout
+@inject NavigationManager Navigation
+
+<PageTitle>Loteria Mexicana Game</PageTitle>
+
+<div class="mexico-container">
+    <div class="bg-green">
+        <!-- Shapes -->
+        <div class="shape circle s1"></div>
+        <div class="shape triangle s2"></div>
+        <div class="shape circle s3"></div>
+        <div class="shape triangle s4"></div>
+        <div class="shape circle s9"></div>
+        <div class="shape triangle s10"></div>
+    </div>
+
+    <div class="center-panel">
+        <h2 class="game-title">Lotería Mexicana</h2>
+
+        <div class="form-group w-100 mt-4 position-relative">
+            <label class="floating-label">Nombre del Jugador</label>
+            <input type="text" class="form-control custom-input" @bind="playerName" @bind:event="oninput" @onkeyup="HandleKeyUp" />
+        </div>
+
+        <button class="btn btn-primary custom-btn mt-4" @onclick="JoinGame" disabled="@string.IsNullOrWhiteSpace(playerName)">JUGAR</button>
+    </div>
+
+    <div class="bg-red">
+        <!-- Shapes -->
+        <div class="shape circle s5"></div>
+        <div class="shape triangle s6"></div>
+        <div class="shape circle s7"></div>
+        <div class="shape triangle s8"></div>
+        <div class="shape circle s11"></div>
+        <div class="shape triangle s12"></div>
+    </div>
+</div>
+
+@code {
+    private string playerName = "";
+
+    private void JoinGame()
+    {
+        if (!string.IsNullOrWhiteSpace(playerName))
+        {
+            Navigation.NavigateTo($"/juego?player={Uri.EscapeDataString(playerName)}");
+        }
+    }
+
+    private void HandleKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            JoinGame();
+        }
+    }
+}

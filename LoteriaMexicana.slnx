@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="LoteriaMexicana/LoteriaMexicana.csproj" />
+  <Project Path="LoteriaWeb/LoteriaWeb.csproj" />
+</Solution>

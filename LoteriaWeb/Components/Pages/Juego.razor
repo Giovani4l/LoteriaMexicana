@@ -1,0 +1,638 @@
+@page "/juego"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@using LoteriaWeb.Models
+@using LoteriaWeb.Hubs
+@using Microsoft.AspNetCore.SignalR.Client
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>Lotería Mexicana</PageTitle>
+
+<style>
+    .ficha-personalizada {
+        width: 80px;
+        height: 80px;
+        position: relative;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 10;
+        cursor: grab;
+        transition: transform 0.15s ease-out, filter 0.15s;
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
+        /* El drop-shadow se ajusta a la forma transparente de la imagen en vez de hacer un circulo */
+        filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.4));
+        image-rendering: -webkit-optimize-contrast;
+    }
+
+    .ficha-personalizada:hover {
+        transform: scale(1.05);
+        filter: drop-shadow(3px 6px 8px rgba(0, 0, 0, 0.5));
+    }
+
+    .ficha-personalizada:active {
+        cursor: grabbing;
+        transform: scale(0.95);
+        filter: drop-shadow(1px 2px 3px rgba(0, 0, 0, 0.6));
+    }
+
+    .ficha-personalizada.invalida {
+        filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.4)) grayscale(100%) brightness(50%) sepia(100%) hue-rotate(-50deg) saturate(600%) contrast(0.8);
+    }
+
+    .ficha-personalizada.invalida::after {
+        content: 'X';
+        position: absolute;
+        color: white;
+        font-family: Arial, sans-serif;
+        font-size: 42px;
+        font-weight: bold;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.9);
+    }
+
+    .ficha-peque {
+        width: 65px;
+        height: 65px;
+    }
+</style>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Lotería Mexicana @(string.IsNullOrEmpty(Player) ? "" : $"- Jugador: {Player}")</h1>
+
+    <div class="card border-info shadow-sm" style="min-width: 250px;">
+        <div class="card-header bg-info text-white py-2 px-3 d-flex justify-content-between align-items-center">
+            <h6 class="mb-0 fw-bold"><i class="bi bi-people-fill me-2"></i>Jugadores Conectados</h6>
+            <span class="badge bg-light text-info rounded-pill fs-6">@jugadoresConectados.Count</span>
+        </div>
+        <div class="card-body py-2 px-3" style="max-height: 150px; overflow-y: auto; background-color: #f8f9fa;">
+            @if (jugadoresConectados.Any())
+            {
+                <ul class="list-unstyled mb-0">
+                    @for (int i = 0; i < jugadoresConectados.Count; i++)
+                    {
+                        var jugador = jugadoresConectados[i];
+                        <li class="mb-1 border-bottom pb-1 border-light d-flex align-items-center">
+                            <span class="badge @(jugador.EsHost ? "bg-warning text-dark" : "bg-primary") rounded-circle me-2" style="width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;">
+                                @(jugador.Nombre.Length > 0 ? jugador.Nombre.Substring(0, 1).ToUpper() : "?")
+                            </span> 
+                            <span class="fw-medium text-dark flex-grow-1">
+                                @jugador.Nombre
+                                @if (jugador.Victorias > 0)
+                                {
+                                    <span class="badge bg-success ms-1" style="font-size: 0.70rem;" title="Partidas Ganadas">🏆 @jugador.Victorias</span>
+                                }
+                                @if (jugador.EsHost)
+                                {
+                                    <span class="badge bg-warning text-dark ms-1" style="font-size: 0.70rem;">Gritón</span>
+                                }
+                            </span>
+                            @if (!jugadoresConectados.Any(j => j.EsHost) && jugador.Listo)
+                            {
+                                <i class="bi bi-check-circle-fill text-success" title="Listo">✓</i>
+                            }
+                        </li>
+                    }
+                </ul>
+            }
+            else
+            {
+                <div class="text-center text-muted py-2">
+                    <div class="spinner-border spinner-border-sm text-info mb-2" role="status"></div>
+                    <br/>
+                    <span style="font-size: 0.85rem;">Esperando jugadores...</span>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-4">
+        <h3>Baraja</h3>
+        @if (esHost)
+        {
+            <div class="mb-3">
+                <label for="formatoGanador" class="form-label">Formato para ganar:</label>
+                <select id="formatoGanador" class="form-select" @bind="formatoSeleccionado" disabled="@juegoIniciado">
+                    <option value="Ninguno">Seleccione un formato...</option>
+                    <option value="LineaHorizontal">Línea Horizontal</option>
+                    <option value="LineaVertical">Línea Vertical</option>
+                    <option value="Diagonal">Diagonal</option>
+                    <option value="Cruz">Cruz</option>
+                    <option value="Cruzita">Cruzita</option>
+                    <option value="TablaLlena">Tabla Llena</option>
+                </select>
+            </div>
+
+            <button class="btn btn-primary mb-3" @onclick="IniciarJuego" disabled="@(formatoSeleccionado == FormatoGanador.Ninguno)">Barajar y Empezar</button>
+            <button class="btn btn-success mb-3" @onclick="SacarCarta" disabled="@(!juegoIniciado)">Sacar Carta</button>
+        }
+        else if (jugadoresConectados.Any(j => j.EsHost))
+        {
+            <div class="alert alert-warning py-2 mb-3">
+                <small><i class="bi bi-info-circle me-2"></i><strong>El Gritón</strong> controla la baraja.</small>
+            </div>
+            @if (juegoIniciado)
+            {
+                <div class="mb-3 p-2 bg-light border rounded">
+                    <strong>Formato a ganar:</strong> @formatoActual
+                </div>
+            }
+            else
+            {
+                <div class="mb-3 p-2 bg-light border rounded text-muted">
+                    Esperando que inicie el juego...
+                </div>
+            }
+        }
+        else
+        {
+            <div class="alert alert-secondary py-2 mb-3 text-center">
+                <small>Esperando a que todos estén listos para asignar al Gritón...</small>
+            </div>
+            <button class="btn @(estoyListo ? "btn-danger" : "btn-success") w-100 mb-3" @onclick="ToggleListo" disabled="@(conteoAsignacion > 0)">
+                @(estoyListo ? "Cancelar Listo" : "¡Estoy Listo!")
+            </button>
+        }
+
+        <div class="mb-3">
+            <label for="imagenFicha" class="form-label">Selecciona tu ficha:</label>
+            <select id="imagenFicha" class="form-select" @bind="imagenFichaSeleccionada">
+                <option value="/images/fichas/Heineken-removebg-preview.png">Heineken</option>
+                <option value="/images/fichas/Corona.png">Corona</option>
+                <option value="/images/fichas/CocaCola.png">CocaCola</option>
+                <option value="Combinada">Combinada (Heineken, Corona, CocaCola)</option>
+            </select>
+        </div>
+
+        @if (formatoActual != FormatoGanador.Ninguno && juegoIniciado && esHost)
+        {
+            <div class="alert alert-info py-2">
+                <strong>Formato:</strong> @formatoActual
+            </div>
+        }
+
+        @if (cartaActual != null)
+        {
+            <div class="card text-center border-primary mx-auto" style="width: 14rem; aspect-ratio: 2/3; padding: 0; overflow: hidden; border-width: 4px;">
+                <img src="@cartaActual.ImagenUrl" alt="@cartaActual.Nombre" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none'" />
+            </div>
+            <div class="text-center mt-2">
+                <h5>@cartaActual.Numero - @cartaActual.Nombre</h5>
+                <p><i>"@cartaActual.Frase"</i></p>
+            </div>
+        }
+    </div>
+
+    <div class="col-md-8">
+        <h3>Historial de Cartas</h3>
+        <div class="d-flex flex-wrap gap-2">
+            @foreach (var carta in cartasPasadas)
+            {
+                <div class="card text-center border-secondary" style="width: 60px; aspect-ratio: 2/3; padding: 0; overflow: hidden; border-width: 2px;">
+                    <img src="@carta.ImagenUrl" alt="@carta.Nombre" style="width: 100%; height: 100%; object-fit: cover;" title="@carta.Numero - @carta.Nombre" onerror="this.style.display='none'" />
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+<hr />
+
+<div class="row mt-4">
+    <div class="col-md-9">
+        <h3>Mi Tabla</h3>
+        <button class="btn btn-secondary mb-3" @onclick="GenerarTabla" disabled="@(juegoIniciado && cartasPasadas.Count > 0)">Generar Nueva Tabla</button>
+        <button class="btn btn-warning mb-3 ms-2" @onclick="VerificarVictoria" disabled="@(!juegoIniciado || formatoActual == FormatoGanador.Ninguno)">¡Lotería!</button>
+
+        @if (!string.IsNullOrEmpty(mensajeVictoria))
+        {
+            <div class="alert alert-success">
+                @mensajeVictoria
+            </div>
+        }
+
+        @if (miTabla != null)
+        {
+            <div class="d-grid gap-2" style="grid-template-columns: repeat(5, 1fr); max-width: 750px;">
+                @foreach (var (carta, i) in miTabla.Casillas.Select((c, i) => (c, i)))
+                {
+                    var marcada = cartasMarcadas.Contains(carta.Numero);
+                    var invalida = cartasInvalidas.Contains(carta.Numero);
+                    var borderClass = invalida ? "border-danger" : (marcada ? "border-primary" : "border-secondary");
+
+                    <div class="card text-center @borderClass" 
+                         style="cursor: pointer; aspect-ratio: 2/3; padding: 0; overflow: hidden; position: relative; border-width: 3px;" 
+                         @onclick="() => MarcarCarta(carta.Numero)"
+                         ondragover="event.preventDefault();"
+                         @ondrop="() => SoltarFicha(carta.Numero)">
+                        <img src="@carta.ImagenUrl" alt="@carta.Nombre" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none'" />
+
+                        @if (marcada || invalida)
+                        {
+                            var img = imagenesFichasMarcadas.ContainsKey(carta.Numero) ? imagenesFichasMarcadas[carta.Numero] : ObtenerImagenFicha(i);
+                            <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);">
+                                <div class="ficha-personalizada @(invalida ? "invalida" : "")"
+                                     style="background-image: url('@img');"
+                                     draggable="true"
+                                     @ondragstart="() => IniciarArrastre(carta.Numero, img)"
+                                     @onclick:stopPropagation="true"
+                                     @onclick="() => MarcarCarta(carta.Numero)">
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </div>
+    <div class="col-md-3">
+        <h3>Mis Fichas</h3>
+        <div class="card border-primary shadow-sm">
+            <div class="card-header bg-primary text-white text-center">
+                <h6 class="mb-0">Fichas Disponibles</h6>
+            </div>
+            <div class="card-body text-center"
+                 ondragover="event.preventDefault();"
+                 @ondrop="RegresarFicha">
+                <h2 class="display-4 fw-bold text-primary mb-3">@(25 - cartasMarcadas.Count)</h2>
+
+                <div style="position: relative; height: 220px; width: 100%; margin: 0 auto; border: 2px dashed #dee2e6; border-radius: 10px; background-color: #f8f9fa; overflow: hidden;">
+                    @for (int i = 0; i < (25 - cartasMarcadas.Count); i++)
+                    {
+                        var left = 10 + ((i * 37) % 55);
+                        var top = 5 + ((i * 23) % 65);
+                        var rot = (i * 73) % 360;
+
+                        <div style="position: absolute; left: @left%; top: @top%; transform: rotate(@(rot)deg);">
+                            <div class="ficha-personalizada ficha-peque"
+                                 style="background-image: url('@ObtenerImagenFicha(i)');"
+                                 draggable="true"
+                                 @ondragstart="() => IniciarArrastre(null, ObtenerImagenFicha(i))">
+                            </div>
+                        </div>
+                    }
+                </div>
+
+                @if (cartasMarcadas.Count > 0)
+                {
+                    <p class="text-muted mt-3 mb-0" style="font-size: 0.85rem;">Arrastra una ficha de regreso aquí para quitarla.</p>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<audio id="audioPlayer" style="display:none;"></audio>
+
+<script>
+    window.playAudio = (url) => {
+        const audio = document.getElementById('audioPlayer');
+        audio.src = url;
+        audio.play().catch(e => console.log("Audio play failed:", e));
+    }
+    window.speakText = (text) => {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'es-MX';
+        window.speechSynthesis.speak(utterance);
+    }
+</script>
+
+@code {
+    private HubConnection? hubConnection;
+    private List<Carta> cartasPasadas = new();
+    private Carta? cartaActual;
+    private bool juegoIniciado = false;
+    private bool esHost = false;
+    private int conteoAsignacion = 0;
+    private bool estoyListo = false;
+    private Tabla? miTabla;
+    private HashSet<int> cartasMarcadas = new();
+    private Dictionary<int, string> imagenesFichasMarcadas = new();
+    private HashSet<int> cartasInvalidas = new();
+    private FormatoGanador formatoSeleccionado = FormatoGanador.Ninguno;
+    private FormatoGanador formatoActual = FormatoGanador.Ninguno;
+    private string? mensajeVictoria;
+    private List<JugadorInfo> jugadoresConectados = new();
+    private int? fichaArrastradaOrigen = null;
+    private string fichaArrastradaImagenUrl = "";
+
+    private string imagenFichaSeleccionada = "/images/fichas/Heineken-removebg-preview.png"; // Default image
+
+    private string[] opcionesFichasCombinadas = new[] { 
+        "/images/fichas/Heineken-removebg-preview.png", 
+        "/images/fichas/Corona.png", 
+        "/images/fichas/CocaCola.png" 
+    };
+
+    private string ObtenerImagenFicha(int index)
+    {
+        if (imagenFichaSeleccionada == "Combinada")
+        {
+            return opcionesFichasCombinadas[index % opcionesFichasCombinadas.Length];
+        }
+        return imagenFichaSeleccionada;
+    }
+
+    [SupplyParameterFromQuery]
+    public string? Player { get; set; }
+
+    private async Task ToggleListo()
+    {
+        if (hubConnection is not null)
+        {
+            estoyListo = !estoyListo;
+            await hubConnection.SendAsync("MarcarListo", estoyListo);
+        }
+    }
+
+    private void IniciarArrastre(int? origen, string imagenUrl)
+    {
+        fichaArrastradaOrigen = origen;
+        fichaArrastradaImagenUrl = imagenUrl;
+    }
+
+    private void SoltarFicha(int destino)
+    {
+        if (fichaArrastradaOrigen.HasValue)
+        {
+            if (fichaArrastradaOrigen.Value != destino)
+            {
+                cartasMarcadas.Remove(fichaArrastradaOrigen.Value);
+                cartasInvalidas.Remove(fichaArrastradaOrigen.Value);
+                imagenesFichasMarcadas.Remove(fichaArrastradaOrigen.Value);
+
+                cartasMarcadas.Add(destino);
+                imagenesFichasMarcadas[destino] = fichaArrastradaImagenUrl;
+            }
+        }
+        else
+        {
+            cartasMarcadas.Add(destino);
+            imagenesFichasMarcadas[destino] = fichaArrastradaImagenUrl;
+        }
+        fichaArrastradaOrigen = null;
+    }
+
+    private void RegresarFicha()
+    {
+        if (fichaArrastradaOrigen.HasValue)
+        {
+            cartasMarcadas.Remove(fichaArrastradaOrigen.Value);
+            cartasInvalidas.Remove(fichaArrastradaOrigen.Value);
+            imagenesFichasMarcadas.Remove(fichaArrastradaOrigen.Value);
+        }
+        fichaArrastradaOrigen = null;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        GenerarTabla();
+
+        hubConnection = new HubConnectionBuilder()
+            .WithUrl(Navigation.ToAbsoluteUri("/loteriahub"))
+            .Build();
+
+        hubConnection.On<FormatoGanador>("JuegoIniciado", (formato) =>
+        {
+            cartasPasadas.Clear();
+            cartaActual = null;
+            juegoIniciado = true;
+            formatoActual = formato;
+            formatoSeleccionado = formato;
+            cartasMarcadas.Clear();
+            cartasInvalidas.Clear();
+            imagenesFichasMarcadas.Clear();
+            mensajeVictoria = null;
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On<bool>("RolesActualizados", (hostStatus) =>
+        {
+            esHost = hostStatus;
+            if (esHost)
+            {
+                estoyListo = false;
+            }
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On<int>("ConteoActual", (segundos) =>
+        {
+            conteoAsignacion = segundos;
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On("ConteoCancelado", () =>
+        {
+            conteoAsignacion = 0;
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On("ConteoTerminado", () =>
+        {
+            conteoAsignacion = 0;
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On<Carta>("CartaSacada", async (carta) =>
+        {
+            cartaActual = carta;
+            cartasPasadas.Add(carta);
+            await InvokeAsync(StateHasChanged);
+
+            // Para simular el sonido con voz del navegador (Text-to-Speech):
+            await JS.InvokeVoidAsync("speakText", $"{carta.Frase} {carta.Nombre}");
+        });
+
+        hubConnection.On<List<Carta>, FormatoGanador>("EstadoActualizado", (pasadas, formato) =>
+        {
+            cartasPasadas = pasadas;
+            formatoActual = formato;
+            formatoSeleccionado = formato;
+            if (pasadas.Any())
+            {
+                cartaActual = pasadas.Last();
+                juegoIniciado = true;
+            }
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On<List<JugadorInfo>>("JugadoresActualizadosInfo", (jugadores) =>
+        {
+            jugadoresConectados = jugadores;
+            InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On<string>("AlguienGano", async (nombreGanador) =>
+        {
+            juegoIniciado = false;
+            if (nombreGanador != (Player ?? "Jugador Anónimo"))
+            {
+                mensajeVictoria = $"¡Lotería! {nombreGanador} ha ganado el juego.";
+            }
+            await InvokeAsync(StateHasChanged);
+        });
+
+        await hubConnection.StartAsync();
+        await hubConnection.SendAsync("UnirseAlJuego", Player ?? "Jugador Anónimo");
+        await hubConnection.SendAsync("ObtenerEstadoActual");
+    }
+
+    private async Task IniciarJuego()
+    {
+        if (hubConnection is not null && formatoSeleccionado != FormatoGanador.Ninguno)
+        {
+            await hubConnection.SendAsync("IniciarJuego", formatoSeleccionado);
+        }
+    }
+
+    private async Task SacarCarta()
+    {
+        if (hubConnection is not null)
+        {
+            await hubConnection.SendAsync("SacarCarta");
+        }
+    }
+
+    private void GenerarTabla()
+    {
+        var todasLasCartas = new Baraja().Cartas;
+        miTabla = Tabla.GenerarTablaAleatoria(1, todasLasCartas);
+        cartasMarcadas.Clear();
+        cartasInvalidas.Clear();
+        imagenesFichasMarcadas.Clear();
+        mensajeVictoria = null;
+    }
+
+    private void MarcarCarta(int numero)
+    {
+        if (cartasMarcadas.Contains(numero))
+        {
+            cartasMarcadas.Remove(numero);
+            cartasInvalidas.Remove(numero);
+            imagenesFichasMarcadas.Remove(numero);
+        }
+        else
+        {
+            cartasMarcadas.Add(numero);
+            // Defaulting fallback when tapped instead of dragged
+            imagenesFichasMarcadas[numero] = ObtenerImagenFicha(numero);
+        }
+    }
+
+    private async Task VerificarVictoria()
+    {
+        if (miTabla == null || formatoActual == FormatoGanador.Ninguno) return;
+
+        var cartasSacadas = cartasPasadas.Select(c => c.Numero).ToHashSet();
+        cartasInvalidas.Clear();
+
+        bool trampa = false;
+        foreach (var marcada in cartasMarcadas)
+        {
+            if (!cartasSacadas.Contains(marcada))
+            {
+                cartasInvalidas.Add(marcada);
+                trampa = true;
+            }
+        }
+
+        if (trampa)
+        {
+            mensajeVictoria = "¡Hiciste trampa! Marcaste cartas que no han salido (marcadas en rojo).";
+            return;
+        }
+
+        var indicesMarcados = miTabla.Casillas
+            .Select((c, i) => new { Carta = c, Index = i })
+            .Where(x => cartasMarcadas.Contains(x.Carta.Numero))
+            .Select(x => x.Index)
+            .ToHashSet();
+
+        bool gano = false;
+
+        switch (formatoActual)
+        {
+            case FormatoGanador.LineaHorizontal:
+                for (int row = 0; row < 5; row++)
+                {
+                    if (Enumerable.Range(row * 5, 5).All(i => indicesMarcados.Contains(i)))
+                    {
+                        gano = true;
+                        break;
+                    }
+                }
+                break;
+            case FormatoGanador.LineaVertical:
+                for (int col = 0; col < 5; col++)
+                {
+                    if (Enumerable.Range(0, 5).Select(r => r * 5 + col).All(i => indicesMarcados.Contains(i)))
+                    {
+                        gano = true;
+                        break;
+                    }
+                }
+                break;
+            case FormatoGanador.Diagonal:
+                bool diag1 = Enumerable.Range(0, 5).Select(i => i * 5 + i).All(i => indicesMarcados.Contains(i));
+                bool diag2 = Enumerable.Range(0, 5).Select(i => i * 5 + (4 - i)).All(i => indicesMarcados.Contains(i));
+                gano = diag1 || diag2;
+                break;
+            case FormatoGanador.Cruz:
+                bool filaCentral = Enumerable.Range(10, 5).All(i => indicesMarcados.Contains(i));
+                bool colCentral = Enumerable.Range(0, 5).Select(r => r * 5 + 2).All(i => indicesMarcados.Contains(i));
+                gano = filaCentral && colCentral;
+                break;
+            case FormatoGanador.Cruzita:
+                for (int r = 1; r <= 3; r++)
+                {
+                    for (int c = 1; c <= 3; c++)
+                    {
+                        var plusIndices = new[] {
+                            r * 5 + c,             // centro
+                            (r - 1) * 5 + c,       // arriba
+                            (r + 1) * 5 + c,       // abajo
+                            r * 5 + (c - 1),       // izquierda
+                            r * 5 + (c + 1)        // derecha
+                        };
+
+                        if (plusIndices.All(i => indicesMarcados.Contains(i)))
+                        {
+                            gano = true;
+                            break;
+                        }
+                    }
+                    if (gano) break;
+                }
+                break;
+            case FormatoGanador.TablaLlena:
+                gano = indicesMarcados.Count == 25;
+                break;
+        }
+
+        if (gano)
+        {
+            mensajeVictoria = "¡Felicidades! Verificamos tus cartas y ¡Has ganado la Lotería!";
+            if (hubConnection is not null)
+            {
+                await hubConnection.SendAsync("ReclamarVictoria");
+            }
+        }
+        else
+        {
+            mensajeVictoria = "¡Falsa alarma! Verificamos tus cartas y aún no tienes el patrón ganador con las cartas marcadas.";
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection is not null)
+        {
+            await hubConnection.DisposeAsync();
+        }
+    }
+}
